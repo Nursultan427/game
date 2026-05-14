@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RL Arena</title>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      min-height: 100vh;
+      font-family: Inter, system-ui, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+    }
+    .container {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 18px;
+      padding: 24px;
+    }
+    .panel {
+      background: #172554;
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      border-radius: 18px;
+      padding: 20px;
+      box-shadow: 0 20px 60px rgba(15, 23, 42, 0.25);
+    }
+    .panel h1,
+    .panel h2 {
+      margin: 0 0 12px;
+      color: #f8fafc;
+    }
+    .game-canvas {
+      width: 100%;
+      max-width: 100%;
+      border-radius: 14px;
+      background: #0f172a;
+      display: block;
+    }
+    button {
+      border: 0;
+      border-radius: 12px;
+      padding: 12px 18px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .btn-primary {
+      background: #2563eb;
+      color: #fff;
+    }
+    .btn-secondary {
+      background: #14b8a6;
+      color: #fff;
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+    .status {
+      margin: 0;
+      color: #cbd5e1;
+    }
+    .chart-wrapper {
+      position: relative;
+      width: 100%;
+      min-height: 420px;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script>
+    const { useState, useEffect, useRef } = React;
+    const GRID = 15;
+    const CELL = 30;
+    const WIDTH = GRID * CELL;
+    const HEIGHT = GRID * CELL;
+    const ACTIONS = [0, 1, 2, 3];
+
+    const getState = (player, coin, enemies) => {
+      const [px, py] = player;
+      const [cx, cy] = coin;
+      const dx = Math.sign(cx - px);
+      const dy = Math.sign(cy - py);
+      const danger = [0, 0, 0, 0];
+      enemies.forEach(([ex, ey]) => {
+        if (ex === px && ey === py - 1) danger[0] = 1;
+        if (ex === px && ey === py + 1) danger[1] = 1;
+        if (ex === px - 1 && ey === py) danger[2] = 1;
+        if (ex === px + 1 && ey === py) danger[3] = 1;
+      });
+      return [dx, dy, ...danger].join(',');
+    };
+
+    const chooseAction = (state, qTable, epsilon) => {
+      if (!qTable[state]) qTable[state] = [0, 0, 0, 0];
+      if (Math.random() < epsilon) {
+        return ACTIONS[Math.floor(Math.random() * ACTIONS.length)];
+      }
+      const row = qTable[state];
+      return row.indexOf(Math.max(...row));
+    };
+
+    const updateQ = (qTable, state, action, reward, nextState, alpha, gamma) => {
+      if (!qTable[nextState]) qTable[nextState] = [0, 0, 0, 0];
+      const bestNext = Math.max(...qTable[nextState]);
+      qTable[state][action] += alpha * (reward + gamma * bestNext - qTable[state][action]);
+    };
+
+    const move = (pos, action) => {
+      let [x, y] = pos;
+      if (action === 0) y -= 1;
+      else if (action === 1) y += 1;
+      else if (action === 2) x -= 1;
+      else if (action === 3) x += 1;
+      x = Math.max(0, Math.min(GRID - 1, x));
+      y = Math.max(0, Math.min(GRID - 1, y));
+      return [x, y];
+    };
+
+    const RLArena = () => {
+      const [rewards, setRewards] = useState([]);
+      const [episode, setEpisode] = useState(0);
+      const [status, setStatus] = useState('Готово');
+      const [running, setRunning] = useState(false);
+      const [autoRun, setAutoRun] = useState(false);
+      const [gameState, setGameState] = useState({
+        player: [7, 7],
+        coin: [10, 5],
+        enemies: [[3, 3]],
+      });
+      const qTableRef = useRef({});
+      const chartRef = useRef(null);
+      const canvasRef = useRef(null);
+      const chartInstanceRef = useRef(null);
+
+      useEffect(() => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, WIDTH, HEIGHT);
+        ctx.fillStyle = '#0f172a';
+        ctx.fillRect(0, 0, WIDTH, HEIGHT);
+        for (let x = 0; x < GRID; x += 1) {
+          for (let y = 0; y < GRID; y += 1) {
+            ctx.strokeStyle = '#334155';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(x * CELL, y * CELL, CELL, CELL);
+          }
+        }
+        const [px, py] = gameState.player;
+        const [cx, cy] = gameState.coin;
+        ctx.fillStyle = '#facc15';
+        ctx.fillRect(cx * CELL + 4, cy * CELL + 4, CELL - 8, CELL - 8);
+        gameState.enemies.forEach(([ex, ey]) => {
+          ctx.fillStyle = '#ef4444';
+          ctx.fillRect(ex * CELL + 4, ey * CELL + 4, CELL - 8, CELL - 8);
+        });
+        ctx.fillStyle = '#22c55e';
+        ctx.fillRect(px * CELL + 4, py * CELL + 4, CELL - 8, CELL - 8);
+      }, [gameState]);
+
+      useEffect(() => {
+        if (!chartRef.current) return;
+        const ctx = chartRef.current.getContext('2d');
+        if (chartInstanceRef.current) chartInstanceRef.current.destroy();
+        chartInstanceRef.current = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels: rewards.map((_, index) => index + 1),
+            datasets: [
+              {
+                label: 'Награда за эпизод',
+                data: rewards,
+                borderColor: '#38bdf8',
+                backgroundColor: 'rgba(56, 189, 248, 0.25)',
+                fill: true,
+                tension: 0.3,
+                pointRadius: 2,
+              },
+            ],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: { labels: { color: '#e2e8f0' } },
+            },
+            scales: {
+              x: {
+                title: { display: true, text: 'Эпизод', color: '#cbd5e1' },
+                ticks: { color: '#cbd5e1' },
+                grid: { color: 'rgba(148, 163, 184, 0.1)' },
+              },
+              y: {
+                title: { display: true, text: 'Награда', color: '#cbd5e1' },
+                ticks: { color: '#cbd5e1' },
+                grid: { color: 'rgba(148, 163, 184, 0.1)' },
+              },
+            },
+          },
+        });
+      }, [rewards]);
+
+      useEffect(() => {
+        if (!autoRun || running) return;
+        if (!Object.keys(qTableRef.current).length) {
+          setAutoRun(false);
+          setStatus('Сначала обучите агента');
+          return;
+        }
+
+        const interval = setInterval(() => {
+          setGameState((prev) => {
+            const qTable = qTableRef.current;
+            const action = chooseAction(getState(prev.player, prev.coin, prev.enemies), qTable, 0);
+            const player = move(prev.player, action);
+            const enemies = prev.enemies.map((enemy) => move(enemy, ACTIONS[Math.floor(Math.random() * ACTIONS.length)]));
+            let coin = prev.coin;
+            if (player[0] === coin[0] && player[1] === coin[1]) {
+              coin = [Math.floor(Math.random() * GRID), Math.floor(Math.random() * GRID)];
+            }
+            if (enemies.some(([ex, ey]) => ex === player[0] && ey === player[1])) {
+              setStatus('Игра окончена: агент пойман');
+              setAutoRun(false);
+              return { ...prev, player, enemies };
+            }
+            return { player, coin, enemies };
+          });
+        }, 180);
+
+        return () => clearInterval(interval);
+      }, [autoRun, running]);
+
+      const resetGame = () => {
+        setAutoRun(false);
+        setStatus('Готово');
+        setGameState({ player: [7, 7], coin: [10, 5], enemies: [[3, 3]] });
+      };
+
+      const train = async () => {
+        setRunning(true);
+        setAutoRun(false);
+        setStatus('Обучение агента...');
+        const qTable = {};
+        const alpha = 0.1;
+        const gamma = 0.9;
+        const epsilon = 0.2;
+        const numEpisodes = 300;
+        const maxSteps = 200;
+        const nextRewards = [];
+
+        for (let ep = 0; ep < numEpisodes; ep += 1) {
+          let player = [Math.floor(Math.random() * GRID), Math.floor(Math.random() * GRID)];
+          let coin = [Math.floor(Math.random() * GRID), Math.floor(Math.random() * GRID)];
+          let enemies = [[Math.floor(Math.random() * GRID), Math.floor(Math.random() * GRID)]];
+          let totalReward = 0;
+
+          for (let step = 0; step < maxSteps; step += 1) {
+            const state = getState(player, coin, enemies);
+            const action = chooseAction(state, qTable, epsilon);
+            const newPlayer = move(player, action);
+            let reward = -1;
+            if (newPlayer[0] === coin[0] && newPlayer[1] === coin[1]) {
+              reward = 20;
+              coin = [Math.floor(Math.random() * GRID), Math.floor(Math.random() * GRID)];
+            }
+            if (enemies.some(([ex, ey]) => ex === newPlayer[0] && ey === newPlayer[1])) {
+              reward = -50;
+              const nextState = getState(newPlayer, coin, enemies);
+              updateQ(qTable, state, action, reward, nextState, alpha, gamma);
+              totalReward += reward;
+              break;
+            }
+            const nextState = getState(newPlayer, coin, enemies);
+            updateQ(qTable, state, action, reward, nextState, alpha, gamma);
+            player = newPlayer;
+            enemies = enemies.map((enemy) => move(enemy, ACTIONS[Math.floor(Math.random() * ACTIONS.length)]));
+            totalReward += reward;
+          }
+
+          nextRewards.push(totalReward);
+          if (ep % 10 === 0) {
+            setRewards([...nextRewards]);
+            setEpisode(ep + 1);
+            setGameState({ player, coin, enemies });
+            await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+        }
+
+        setRewards(nextRewards);
+        setEpisode(numEpisodes);
+        setStatus('Обучение завершено');
+        setRunning(false);
+        qTableRef.current = qTable;
+        setGameState({ player: [7, 7], coin: [10, 5], enemies: [[3, 3]] });
+      };
+
+      const stepGame = () => {
+        const qTable = qTableRef.current;
+        if (!Object.keys(qTable).length) {
+          setStatus('Сначала обучите агента');
+          return;
+        }
+        setStatus('Игровой шаг');
+        setGameState((prev) => {
+          const action = chooseAction(getState(prev.player, prev.coin, prev.enemies), qTable, 0);
+          const player = move(prev.player, action);
+          const enemies = prev.enemies.map((enemy) => move(enemy, ACTIONS[Math.floor(Math.random() * ACTIONS.length)]));
+          let coin = prev.coin;
+          if (player[0] === coin[0] && player[1] === coin[1]) {
+            coin = [Math.floor(Math.random() * GRID), Math.floor(Math.random() * GRID)];
+          }
+          if (enemies.some(([ex, ey]) => ex === player[0] && ey === player[1])) {
+            setStatus('Игра окончена: агент пойман');
+            return { ...prev, player, enemies };
+          }
+          return { player, coin, enemies };
+        });
+      };
+
+      const toggleAutoRun = () => {
+        if (!Object.keys(qTableRef.current).length) {
+          setStatus('Сначала обучите агента');
+          return;
+        }
+        setAutoRun((prev) => !prev);
+        if (!autoRun) setStatus('Авто-игра запущена');
+      };
+
+      return React.createElement('div', { className: 'container' },
+        React.createElement('div', { className: 'panel' },
+          React.createElement('h1', null, 'RL Arena'),
+          React.createElement('p', null, 'Здесь игра и график обучения показываются на одной React-странице.'),
+          React.createElement('div', { className: 'actions' },
+            React.createElement('button', { className: 'btn-primary', onClick: train, disabled: running }, running ? 'Обучение...' : 'Обучить агента'),
+            React.createElement('button', { className: 'btn-secondary', onClick: stepGame, disabled: running }, 'Сделать шаг'),
+            React.createElement('button', { className: 'btn-secondary', onClick: toggleAutoRun, disabled: running }, autoRun ? 'Остановить игру' : 'Запустить игру'),
+            React.createElement('button', { className: 'btn-secondary', onClick: resetGame, disabled: running }, 'Сбросить поле')
+          ),
+          React.createElement('p', { className: 'status' }, `Эпизоды: ${episode}`),
+          React.createElement('p', { className: 'status' }, `Статус: ${status}`),
+          React.createElement('div', { style: { marginTop: '18px' } },
+            React.createElement('canvas', { ref: canvasRef, className: 'game-canvas', width: WIDTH, height: HEIGHT })
+          )
+        ),
+        React.createElement('div', { className: 'panel' },
+          React.createElement('h2', null, 'График обучения'),
+          React.createElement('div', { className: 'chart-wrapper' },
+            React.createElement('canvas', { ref: chartRef })
+          )
+        )
+      );
+    };
+
+    ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(RLArena));
+  </script>
+</body>
+</html>
