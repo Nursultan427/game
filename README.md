@@ -1,6 +1,6 @@
 🛠️ Установка
 1. Клонировать репозиторий
-git clone https://github.com/your-username/rl-arena.git
+git clone https://github.com/Nursultan427/rl-arena.git
 cd rl-arena
 
 2. Установить зависимости
